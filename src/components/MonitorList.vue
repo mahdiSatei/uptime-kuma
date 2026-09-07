@@ -19,21 +19,24 @@
                 </div>
 
                 <div class="filters-group">
-                    <input
-                        v-if="!selectMode"
-                        v-model="selectMode"
-                        class="form-check-input"
-                        type="checkbox"
-                        :aria-label="$t('selectAllMonitorsAria')"
-                        @change="selectAll = selectMode"
-                    />
-                    <input
-                        v-else
-                        v-model="selectAll"
-                        class="form-check-input"
-                        type="checkbox"
-                        :aria-label="selectAll ? $t('deselectAllMonitorsAria') : $t('selectAllMonitorsAria')"
-                    />
+                    <!-- چک‌باکس انتخاب چندتایی مانیتورها: فقط برای Admin و Editor -->
+                    <template v-if="$root.userRole !== 'viewer'">
+                        <input
+                            v-if="!selectMode"
+                            v-model="selectMode"
+                            class="form-check-input"
+                            type="checkbox"
+                            :aria-label="$t('selectAllMonitorsAria')"
+                            @change="selectAll = selectMode"
+                        />
+                        <input
+                            v-else
+                            v-model="selectAll"
+                            class="form-check-input"
+                            type="checkbox"
+                            :aria-label="selectAll ? $t('deselectAllMonitorsAria') : $t('selectAllMonitorsAria')"
+                        />
+                    </template>
 
                     <MonitorListFilter
                         :filterState="filterState"
@@ -45,8 +48,8 @@
                 </div>
             </div>
 
-            <!-- Line 2: Cancel + Actions (shown when selection mode is active) -->
-            <div v-if="selectMode && selectedMonitorCount > 0" class="selection-row">
+            <!-- Line 2: Cancel + Actions (عملیات گروهی: فقط برای غیر Viewer) -->
+            <div v-if="$root.userRole !== 'viewer' && selectMode && selectedMonitorCount > 0" class="selection-row">
                 <button class="btn btn-outline-normal" @click="cancelSelectMode">
                     {{ $t("Cancel") }}
                 </button>
@@ -101,8 +104,7 @@
             data-testid="monitor-list"
         >
             <div v-if="Object.keys($root.monitorList).length === 0" class="text-center mt-3">
-                {{ $t("No Monitors, please") }}
-                <router-link to="/add">{{ $t("add one") }}</router-link>
+                {{ $t("No Monitors") }}<span v-if="$root.userRole !== 'viewer'">, please <router-link to="/add">{{ $t("add one") }}</router-link></span>
             </div>
 
             <MonitorListItem
@@ -141,7 +143,6 @@ export default {
         MonitorListFilter,
     },
     props: {
-        /** Should the scrollbar be shown */
         scrollbar: {
             type: Boolean,
         },
@@ -164,12 +165,6 @@ export default {
         };
     },
     computed: {
-        /**
-         * Improve the sticky appearance of the list by increasing its
-         * height as user scrolls down.
-         * Not used on mobile.
-         * @returns {object} Style for monitor list
-         */
         boxStyle() {
             if (window.innerWidth > 550) {
                 return {
@@ -182,15 +177,10 @@ export default {
             }
         },
 
-        /**
-         * Returns a sorted list of monitors based on the applied filters and search text.
-         * @returns {Array} The sorted list of monitors.
-         */
         sortedMonitorList() {
             let result = Object.values(this.$root.monitorList);
 
             result = result.filter((monitor) => {
-                // The root list does not show children
                 if (monitor.parent !== null) {
                     return false;
                 }
@@ -209,11 +199,8 @@ export default {
         },
 
         monitorListStyle() {
-            // The header height has to be changed in case it is modified in the future.
-            // +10px is the margin-bottom of the header
             let listHeaderHeight = 58 + 10;
 
-            // Only add extra height when selection row is visible
             if (this.selectMode && this.selectedMonitorCount > 0) {
                 listHeaderHeight += 42;
             }
@@ -227,10 +214,6 @@ export default {
             return Object.keys(this.selectedMonitors).length;
         },
 
-        /**
-         * Determines if any filters are active.
-         * @returns {boolean} True if any filter is active, false otherwise.
-         */
         filtersActive() {
             return (
                 this.filterState.status != null ||
@@ -240,30 +223,19 @@ export default {
             );
         },
 
-        /**
-         * Gets all group monitors that have children at any nesting level
-         * @returns {Array} Array of group monitors with children
-         */
         groupMonitors() {
             const monitors = Object.values(this.$root.monitorList);
             return monitors.filter((m) => m.type === "group" && monitors.some((child) => child.parent === m.id));
         },
 
-        /**
-         * Determines if all groups are collapsed.
-         * Note: collapseKey is included to force re-computation when toggleCollapseAll()
-         * updates localStorage, since Vue cannot detect localStorage changes.
-         * @returns {boolean} True if all groups are collapsed
-         */
         allGroupsCollapsed() {
-            // collapseKey forces this computed to re-evaluate after localStorage updates
             if (this.collapseKey < 0 || this.groupMonitors.length === 0) {
                 return true;
             }
 
             const storage = window.localStorage.getItem("monitorCollapsed");
             if (storage === null) {
-                return true; // Default is collapsed
+                return true;
             }
 
             const storageObject = JSON.parse(storage);
@@ -291,7 +263,6 @@ export default {
                         this.selectedMonitors[item.id] = true;
                     });
                 } else {
-                    // Exit select mode when unchecking "select all"
                     this.selectMode = false;
                 }
             } else {
@@ -312,10 +283,6 @@ export default {
         window.removeEventListener("scroll", this.onScroll);
     },
     methods: {
-        /**
-         * Handle user scroll
-         * @returns {void}
-         */
         onScroll() {
             if (window.top.scrollY <= 133) {
                 this.windowTop = window.top.scrollY;
@@ -323,34 +290,15 @@ export default {
                 this.windowTop = 133;
             }
         },
-        /**
-         * Get URL of monitor
-         * @param {number} id ID of monitor
-         * @returns {string} Relative URL of monitor
-         */
         monitorURL(id) {
             return getMonitorRelativeURL(id);
         },
-        /**
-         * Clear the search bar
-         * @returns {void}
-         */
         clearSearchText() {
             this.searchText = "";
         },
-        /**
-         * Update the MonitorList Filter
-         * @param {object} newFilter Object with new filter
-         * @returns {void}
-         */
         updateFilter(newFilter) {
             this.filterState = newFilter;
         },
-        /**
-         * Toggle collapse state for all group monitors
-         * If collapsing all groups while viewing a nested group, navigate to its root parent
-         * @returns {void}
-         */
         toggleCollapseAll() {
             const shouldCollapse = !this.allGroupsCollapsed;
 
@@ -366,13 +314,11 @@ export default {
 
             window.localStorage.setItem("monitorCollapsed", JSON.stringify(storageObject));
 
-            // If collapsing all and currently viewing a nested group, navigate to root parent
             if (shouldCollapse) {
                 const currentMonitorId = parseInt(this.$route.params.id);
                 const currentMonitor = this.$root.monitorList[currentMonitorId];
 
                 if (currentMonitor && currentMonitor.parent !== null) {
-                    // Find the root parent by traversing up the hierarchy
                     let rootParentId = currentMonitor.parent;
                     let rootParent = this.$root.monitorList[rootParentId];
 
@@ -381,7 +327,6 @@ export default {
                         rootParent = this.$root.monitorList[rootParentId];
                     }
 
-                    // Navigate to the root parent, then increment collapseKey to force re-render
                     this.$router.push(getMonitorRelativeURL(rootParentId)).finally(() => {
                         this.collapseKey++;
                     });
@@ -391,49 +336,22 @@ export default {
 
             this.collapseKey++;
         },
-        /**
-         * Deselect a monitor
-         * @param {number} id ID of monitor
-         * @returns {void}
-         */
         deselect(id) {
             delete this.selectedMonitors[id];
         },
-        /**
-         * Select a monitor
-         * @param {number} id ID of monitor
-         * @returns {void}
-         */
         select(id) {
             this.selectedMonitors[id] = true;
         },
-        /**
-         * Determine if monitor is selected
-         * @param {number} id ID of monitor
-         * @returns {bool} Is the monitor selected?
-         */
         isSelected(id) {
             return id in this.selectedMonitors;
         },
-        /**
-         * Disable select mode and reset selection
-         * @returns {void}
-         */
         cancelSelectMode() {
             this.selectMode = false;
             this.selectedMonitors = {};
         },
-        /**
-         * Show dialog to confirm pause
-         * @returns {void}
-         */
         pauseDialog() {
             this.$refs.confirmPause.show();
         },
-        /**
-         * Pause each selected monitor
-         * @returns {void}
-         */
         pauseSelected() {
             if (this.bulkActionInProgress) {
                 return;
@@ -452,10 +370,6 @@ export default {
             this.bulkActionInProgress = false;
             this.cancelSelectMode();
         },
-        /**
-         * Resume each selected monitor
-         * @returns {void}
-         */
         resumeSelected() {
             if (this.bulkActionInProgress) {
                 return;
@@ -476,10 +390,6 @@ export default {
             this.bulkActionInProgress = false;
             this.cancelSelectMode();
         },
-        /**
-         * Delete each selected monitor
-         * @returns {Promise<void>}
-         */
         async deleteSelected() {
             if (this.bulkActionInProgress) {
                 return;
@@ -505,7 +415,7 @@ export default {
                         });
                     });
                 } catch (error) {
-                    // Error already counted
+                    // Handled
                 }
             }
 
@@ -520,13 +430,7 @@ export default {
 
             this.cancelSelectMode();
         },
-        /**
-         * Whether a monitor should be displayed based on the filters
-         * @param {object} monitor Monitor to check
-         * @returns {boolean} Should the monitor be displayed
-         */
         filterFunc(monitor) {
-            // Group monitors bypass filter if at least 1 of children matched
             if (monitor.type === "group") {
                 const children = Object.values(this.$root.monitorList).filter((m) => m.parent === monitor.id);
                 if (children.some((child, index, children) => this.filterFunc(child))) {
@@ -534,8 +438,6 @@ export default {
                 }
             }
 
-            // filter by search text
-            // finds monitor name, tag name or tag value
             let searchTextMatch = true;
             if (this.searchText !== "") {
                 const loweredSearchText = this.searchText.toLowerCase();
@@ -548,7 +450,6 @@ export default {
                     );
             }
 
-            // filter by status
             let statusMatch = true;
             if (this.filterState.status != null && this.filterState.status.length > 0) {
                 if (monitor.id in this.$root.lastHeartbeatList && this.$root.lastHeartbeatList[monitor.id]) {
@@ -557,29 +458,21 @@ export default {
                 statusMatch = this.filterState.status.includes(monitor.status);
             }
 
-            // filter by active
             let activeMatch = true;
             if (this.filterState.active != null && this.filterState.active.length > 0) {
                 activeMatch = this.filterState.active.includes(monitor.active);
             }
 
-            // filter by tags
             let tagsMatch = true;
             if (this.filterState.tags != null && this.filterState.tags.length > 0) {
                 tagsMatch =
                     monitor.tags
-                        .map((tag) => tag.tag_id) // convert to array of tag IDs
-                        .filter((monitorTagId) => this.filterState.tags.includes(monitorTagId)).length > 0; // perform Array Intersaction between filter and monitor's tags
+                        .map((tag) => tag.tag_id)
+                        .filter((monitorTagId) => this.filterState.tags.includes(monitorTagId)).length > 0;
             }
 
             return searchTextMatch && statusMatch && activeMatch && tagsMatch;
         },
-        /**
-         * Function used in Array.sort to order monitors in a list.
-         * @param {*} m1 monitor 1
-         * @param {*} m2 monitor 2
-         * @returns {number} -1, 0 or 1
-         */
         sortFunc(m1, m2) {
             if (m1.active !== m2.active) {
                 if (m1.active === false) {

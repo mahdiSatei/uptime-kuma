@@ -115,7 +115,8 @@
                 </span>
             </p>
 
-            <div class="functions">
+            <!-- دکمه‌های عملیاتی: فقط برای Admin و Editor -->
+            <div v-if="$root.userRole !== 'viewer'" class="functions">
                 <div class="btn-group" role="group">
                     <button v-if="monitor.active" class="btn btn-normal" @click="pauseDialog">
                         <font-awesome-icon icon="pause" />
@@ -326,7 +327,8 @@
             </div>
 
             <div class="shadow-box table-shadow-box">
-                <div class="dropdown dropdown-clear-data">
+                <!-- دکمه پاک کردن دیتا: فقط مخصوص Admin -->
+                <div v-if="$root.userRole === 'admin'" class="dropdown dropdown-clear-data">
                     <button
                         class="btn btn-sm btn-outline-danger dropdown-toggle"
                         type="button"
@@ -506,10 +508,6 @@ export default {
             return this.$root.monitorList[id];
         },
 
-        /**
-         * Get the count of children monitors for this group
-         * @returns {number} Number of children monitors
-         */
         childrenCount() {
             if (!this.monitor || this.monitor.type !== "group") {
                 return 0;
@@ -518,17 +516,11 @@ export default {
             return children.length;
         },
 
-        /**
-         * Check if the monitor is a group and has children
-         * @returns {boolean} True if monitor is a group with children
-         */
         hasChildren() {
             return this.childrenCount > 0;
         },
 
         lastHeartBeat() {
-            // Also trigger screenshot refresh here
-            // eslint-disable-next-line vue/no-side-effects-in-computed-properties
             this.cacheTime = Date.now();
 
             if (this.monitor.id in this.$root.lastHeartbeatList && this.$root.lastHeartbeatList[this.monitor.id]) {
@@ -565,9 +557,6 @@ export default {
         },
 
         tlsInfo() {
-            // Add: this.$root.tlsInfoList[this.monitor.id].certInfo
-            // Fix: TypeError: Cannot read properties of undefined (reading 'validTo')
-            // Reason: TLS Info object format is changed in 1.8.0, if for some reason, it cannot connect to the site after update to 1.8.0, the object is still in the old format.
             if (this.$root.tlsInfoList[this.monitor.id] && this.$root.tlsInfoList[this.monitor.id].certInfo) {
                 return this.$root.tlsInfoList[this.monitor.id];
             }
@@ -641,79 +630,43 @@ export default {
 
     methods: {
         getResBaseURL,
-        /**
-         * Request a test notification be sent for this monitor
-         * @returns {void}
-         */
         testNotification() {
             this.$root.getSocket().emit("testNotification", this.monitor.id);
             this.$root.toastSuccess("Test notification is requested.");
         },
 
-        /**
-         * Show dialog to confirm pause
-         * @returns {void}
-         */
         pauseDialog() {
             this.$refs.confirmPause.show();
         },
 
-        /**
-         * Resume this monitor
-         * @returns {void}
-         */
         resumeMonitor() {
             this.$root.getSocket().emit("resumeMonitor", this.monitor.id, (res) => {
                 this.$root.toastRes(res);
             });
         },
 
-        /**
-         * Request that this monitor is paused
-         * @returns {void}
-         */
         pauseMonitor() {
             this.$root.getSocket().emit("pauseMonitor", this.monitor.id, (res) => {
                 this.$root.toastRes(res);
             });
         },
 
-        /**
-         * Show dialog to confirm deletion
-         * @returns {void}
-         */
         deleteDialog() {
             this.$refs.confirmDelete.show();
         },
 
-        /**
-         * Show Screenshot Dialog
-         * @returns {void}
-         */
         showScreenshotDialog() {
             this.$refs.screenshotDialog.show();
         },
 
-        /**
-         * Show dialog to confirm clearing events
-         * @returns {void}
-         */
         clearEventsDialog() {
             this.$refs.confirmClearEvents.show();
         },
 
-        /**
-         * Show dialog to confirm clearing heartbeats
-         * @returns {void}
-         */
         clearHeartbeatsDialog() {
             this.$refs.confirmClearHeartbeats.show();
         },
 
-        /**
-         * Request that this monitor is deleted
-         * @returns {void}
-         */
         deleteMonitor() {
             this.$root.deleteMonitor(this.monitor.id, this.deleteChildrenMonitors, (res) => {
                 this.$root.toastRes(res);
@@ -723,10 +676,6 @@ export default {
             });
         },
 
-        /**
-         * Request that this monitors events are cleared
-         * @returns {void}
-         */
         clearEvents() {
             this.$root.clearEvents(this.monitor.id, (res) => {
                 if (res.ok) {
@@ -737,10 +686,6 @@ export default {
             });
         },
 
-        /**
-         * Request that this monitors heartbeats are cleared
-         * @returns {void}
-         */
         clearHeartbeats() {
             this.$root.clearHeartbeats(this.monitor.id, (res) => {
                 if (!res.ok) {
@@ -749,11 +694,6 @@ export default {
             });
         },
 
-        /**
-         * Return the correct title for the ping stat
-         * @param {boolean} average Is the statistic an average?
-         * @returns {string} Title formatted dependent on monitor type
-         */
         pingTitle(average = false) {
             let translationPrefix = "";
             if (average) {
@@ -767,20 +707,10 @@ export default {
             return this.$t(translationPrefix + "Ping");
         },
 
-        /**
-         * Get URL of monitor
-         * @param {number} id ID of monitor
-         * @returns {string} Relative URL of monitor
-         */
         monitorURL(id) {
             return getMonitorRelativeURL(id);
         },
 
-        /**
-         * Filter and hide password in URL for display
-         * @param {string} urlString URL to censor
-         * @returns {string} Censored URL
-         */
         filterPassword(urlString) {
             try {
                 let parsedUrl = new URL(urlString);
@@ -789,15 +719,10 @@ export default {
                 }
                 return parsedUrl.toString();
             } catch (e) {
-                // Handle SQL Server
                 return urlString.replaceAll(/Password=(.+);/gi, "Password=******;");
             }
         },
 
-        /**
-         * Retrieves the length of the important heartbeat list for this monitor.
-         * @returns {void}
-         */
         getImportantHeartbeatListLength() {
             if (this.monitor) {
                 this.$root.getSocket().emit("monitorImportantHeartbeatListCount", this.monitor.id, (res) => {
@@ -809,10 +734,6 @@ export default {
             }
         },
 
-        /**
-         * Retrieves the important heartbeat list for the current page.
-         * @returns {void}
-         */
         getImportantHeartbeatListPaged() {
             if (this.monitor) {
                 const offset = (this.page - 1) * this.perPage;
@@ -826,11 +747,6 @@ export default {
             }
         },
 
-        /**
-         * Updates the displayed records when a new important heartbeat arrives.
-         * @param {object} heartbeat - The heartbeat object received.
-         * @returns {void}
-         */
         onNewImportantHeartbeat(heartbeat) {
             if (heartbeat.monitorID === this.monitor?.id) {
                 if (this.page === 1) {
@@ -843,11 +759,6 @@ export default {
             }
         },
 
-        /**
-         * Highlight the example code
-         * @param {string} code Code
-         * @returns {string} Highlighted code
-         */
         pushExampleHighlighter(code) {
             return highlight(code, languages.js);
         },

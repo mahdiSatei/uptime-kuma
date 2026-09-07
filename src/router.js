@@ -196,3 +196,32 @@ export const router = createRouter({
     history: createWebHistory(),
     routes,
 });
+
+// Guard: کنترل دسترسی به مسیرها بر اساس نقش کاربر
+router.beforeEach((to, from, next) => {
+    const userRole = localStorage.getItem("userRole") || "viewer";
+
+    // ۱. مسیرهایی که Viewer اصلاً اجازه ورود به آن‌ها را ندارد
+    const restrictedForViewer = [
+        "/add",
+        "/clone",
+        "/edit",
+        "/add-status-page",
+        "/manage-status-page",
+        "/add-maintenance",
+        "/maintenance/edit",
+        "/maintenance/clone",
+    ];
+
+    const isViewerBlocked = restrictedForViewer.some((route) => to.path.startsWith(route));
+    if (userRole === "viewer" && isViewerBlocked) {
+        return next("/dashboard");
+    }
+
+    // ۲. کل بخش تنظیمات فقط و فقط برای Admin مجاز است
+    if (to.path.startsWith("/settings") && userRole !== "admin") {
+        return next("/dashboard");
+    }
+
+    next();
+});

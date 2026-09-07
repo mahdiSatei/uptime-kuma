@@ -70,6 +70,7 @@
                 </form>
             </template>
 
+            <!-- 2FA Settings -->
             <div v-if="!settings.disableAuth" class="mt-5 mb-3">
                 <h5 class="my-4 settings-subheading">
                     {{ $t("Two Factor Authentication") }}
@@ -78,6 +79,83 @@
                     <button class="btn btn-primary me-2" type="button" @click="$refs.TwoFADialog.show()">
                         {{ $t("2FA Settings") }}
                     </button>
+                </div>
+            </div>
+
+            <!-- بخش جدید: مدیریت کاربران و نقش‌ها (RBAC) -->
+            <div v-if="!settings.disableAuth" class="mt-5 mb-3">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h5 class="my-4 settings-subheading mb-0">مدیریت کاربران و سطح دسترسی (RBAC)</h5>
+                    <button class="btn btn-outline-primary btn-sm" type="button" @click="showAddUser = !showAddUser">
+                        <font-awesome-icon icon="plus" /> افزودن کاربر جدید
+                    </button>
+                </div>
+
+                <!-- فرم افزودن کاربر جدید -->
+                <transition name="slide-fade">
+                    <div v-if="showAddUser" class="card shadow-sm mb-4 p-3 border-0 bg-light-subtle">
+                        <h6 class="mb-3">تعریف کاربر جدید</h6>
+                        <form @submit.prevent="addUser">
+                            <div class="row g-2">
+                                <div class="col-md-4 mb-2">
+                                    <label class="form-label">نام کاربری</label>
+                                    <input v-model="newUser.username" type="text" class="form-control form-control-sm" required />
+                                </div>
+                                <div class="col-md-4 mb-2">
+                                    <label class="form-label">رمز عبور</label>
+                                    <input v-model="newUser.password" type="password" class="form-control form-control-sm" required />
+                                </div>
+                                <div class="col-md-4 mb-2">
+                                    <label class="form-label">نقش (Role)</label>
+                                    <select v-model="newUser.role" class="form-select form-select-sm">
+                                        <option value="admin">Admin (دسترسی کامل)</option>
+                                        <option value="editor">Editor (مدیریت مانیتورها)</option>
+                                        <option value="viewer">Viewer (فقط مشاهده)</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="mt-2 text-end">
+                                <button type="button" class="btn btn-secondary btn-sm me-2" @click="showAddUser = false">انصراف</button>
+                                <button type="submit" class="btn btn-primary btn-sm">ایجاد کاربر</button>
+                            </div>
+                        </form>
+                    </div>
+                </transition>
+
+                <!-- جدول لیست کاربران -->
+                <div class="table-responsive">
+                    <table class="table table-borderless table-hover">
+                        <thead class="table-light">
+                            <tr>
+                                <th>نام کاربری</th>
+                                <th>نقش (Role)</th>
+                                <th class="text-end">عملیات</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="u in userList" :key="u.id">
+                                <td class="align-middle fw-bold">{{ u.username }}</td>
+                                <td class="align-middle">
+                                    <span class="badge text-uppercase" :class="{
+                                        'bg-danger': u.role === 'admin',
+                                        'bg-warning text-dark': u.role === 'editor',
+                                        'bg-info text-dark': u.role === 'viewer'
+                                    }">
+                                        {{ u.role || 'admin' }}
+                                    </span>
+                                </td>
+                                <td class="text-end">
+                                    <button 
+                                        v-if="u.username !== $root.username" 
+                                        class="btn btn-outline-danger btn-sm" 
+                                        @click="deleteUser(u.id)"
+                                    >
+                                        <font-awesome-icon icon="trash" /> حذف
+                                    </button>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
 
@@ -161,6 +239,14 @@ export default {
                 newPassword: "",
                 repeatNewPassword: "",
             },
+            // RBAC States
+            userList: [],
+            showAddUser: false,
+            newUser: {
+                username: "",
+                password: "",
+                role: "viewer",
+            },
         };
     },
 
@@ -182,11 +268,11 @@ export default {
         },
     },
 
+    mounted() {
+        this.getUserList();
+    },
+
     methods: {
-        /**
-         * Check new passwords match before saving them
-         * @returns {void}
-         */
         savePassword() {
             if (this.password.newPassword !== this.password.repeatNewPassword) {
                 this.invalidPassword = true;
@@ -198,7 +284,6 @@ export default {
                         this.password.newPassword = "";
                         this.password.repeatNewPassword = "";
 
-                        // Update token of the current session
                         if (res.token) {
                             this.$root.storage().token = res.token;
                             this.$root.socket.token = res.token;
@@ -208,15 +293,41 @@ export default {
             }
         },
 
-        /**
-         * Disable authentication for web app access
-         * @returns {void}
-         */
+        // متدهای مدیریت کاربر RBAC
+        getUserList() {
+            this.$root.getSocket().emit("getUserList", (res) => {
+                if (res.ok) {
+                    this.userList = res.data;
+                }
+            });
+        },
+
+        addUser() {
+            this.$root.getSocket().emit("addUser", this.newUser, (res) => {
+                this.$root.toastRes(res);
+                if (res.ok) {
+                    this.showAddUser = false;
+                    this.newUser.username = "";
+                    this.newUser.password = "";
+                    this.newUser.role = "viewer";
+                    this.getUserList();
+                }
+            });
+        },
+
+        deleteUser(userID) {
+            if (confirm("آیا از حذف این کاربر اطمینان دارید؟")) {
+                this.$root.getSocket().emit("deleteUser", userID, (res) => {
+                    this.$root.toastRes(res);
+                    if (res.ok) {
+                        this.getUserList();
+                    }
+                });
+            }
+        },
+
         disableAuth() {
             this.settings.disableAuth = true;
-
-            // Need current password to disable auth
-            // Set it to empty if done
             this.saveSettings(() => {
                 this.password.currentPassword = "";
                 this.$root.username = null;
@@ -224,10 +335,6 @@ export default {
             }, this.password.currentPassword);
         },
 
-        /**
-         * Enable authentication for web app access
-         * @returns {void}
-         */
         enableAuth() {
             this.settings.disableAuth = false;
             this.saveSettings();
@@ -235,10 +342,6 @@ export default {
             location.reload();
         },
 
-        /**
-         * Show confirmation dialog for disable auth
-         * @returns {void}
-         */
         confirmDisableAuth() {
             this.$refs.confirmDisableAuth.show();
         },

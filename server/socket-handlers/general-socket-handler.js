@@ -1,3 +1,4 @@
+const { ROLES, checkRole } = require("../rbac");
 const { log } = require("../../src/util");
 const { Settings } = require("../settings");
 const { sendInfo } = require("../client");
@@ -42,9 +43,10 @@ function getGameList() {
  * @returns {void}
  */
 module.exports.generalSocketHandler = (socket, server) => {
+    // تنظیم تایم‌زون سرور (مخصوص Admin)
     socket.on("initServerTimezone", async (timezone) => {
         try {
-            checkLogin(socket);
+            checkRole(socket, [ROLES.ADMIN]);
             log.debug("generalSocketHandler", "Timezone: " + timezone);
             await Settings.set("initServerTimezone", true);
             await server.setTimezone(timezone);
@@ -69,9 +71,10 @@ module.exports.generalSocketHandler = (socket, server) => {
         }
     });
 
+    // دریافت لیست پردازش‌های PM2 سرور (مخصوص Admin)
     socket.on("getPM2ProcessList", async (callback) => {
         try {
-            checkLogin(socket);
+            checkRole(socket, [ROLES.ADMIN]);
             callback({
                 ok: true,
                 processList: await getPM2ProcessList(),
@@ -84,9 +87,10 @@ module.exports.generalSocketHandler = (socket, server) => {
         }
     });
 
+    // تست کروم برای مرورگر مانیتورینگ (مخصوص Admin)
     socket.on("testChrome", (executable, callback) => {
         try {
-            checkLogin(socket);
+            checkRole(socket, [ROLES.ADMIN]);
             // Just noticed that await call could block the whole socket.io server!!! Use pure promise instead.
             testChrome(executable)
                 .then((version) => {
@@ -148,7 +152,7 @@ module.exports.generalSocketHandler = (socket, server) => {
         });
     });
 
-    // Disconnect all other socket clients of the user
+    // قطع ارتباط نشست‌های دیگر کاربر (نیاز به لاگین)
     socket.on("disconnectOtherSocketClients", async () => {
         try {
             checkLogin(socket);
