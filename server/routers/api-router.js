@@ -18,6 +18,7 @@ const { Prometheus } = require("../prometheus");
 const Database = require("../database");
 const { UptimeCalculator } = require("../uptime-calculator");
 const { Settings } = require("../settings");
+const ReportService = require("../services/report-service");
 
 let router = express.Router();
 
@@ -561,6 +562,70 @@ router.get("/api/badge/:id/response", cache("5 minutes"), async (request, respon
     }
 });
 
+router.get("/api/reports/data", async (request, response) => {
+    allowDevAllOrigin(response);
+
+    try {
+        const { monitorId, startDate, endDate } = request.query;
+
+        if (!monitorId || !startDate || !endDate) {
+            throw new Error("Missing required parameters: monitorId, startDate, or endDate.");
+        }
+
+        const data = await ReportService.generateReportData(
+            parseInt(monitorId, 10),
+            startDate,
+            endDate
+        );
+
+        response.json({
+            ok: true,
+            data,
+        });
+    } catch (error) {
+        console.error("❌ Error in /api/reports/data:", error);
+        response.status(500).json({ ok: false, msg: error.message });
+    }
+});
+
+router.get("/api/reports/export/excel", async (request, response) => {
+    allowDevAllOrigin(response);
+
+    try {
+        const { monitorId, startDate, endDate } = request.query;
+
+        if (!monitorId || !startDate || !endDate) {
+            throw new Error("Missing required parameters: monitorId, startDate, or endDate.");
+        }
+
+        const data = await ReportService.generateReportData(
+            parseInt(monitorId, 10),
+            startDate,
+            endDate
+        );
+
+        const workbook = await ReportService.generateExcel(data);
+
+        const safeName = (data.monitorName || "Monitor").replace(/[^a-zA-Z0-9_\u0600-\u06FF-]/g, "_");
+        const cleanStartDate = startDate.split(" ")[0];
+        const filename = `SLA_Report_${safeName}_${cleanStartDate}.xlsx`;
+
+        response.setHeader(
+            "Content-Type",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        );
+        response.setHeader(
+            "Content-Disposition",
+            `attachment; filename="${encodeURIComponent(filename)}"`
+        );
+
+        await workbook.xlsx.write(response);
+        response.end();
+    } catch (error) {
+        console.error("❌ Error in /api/reports/export/excel:", error);
+        response.status(500).send("Export failed: " + error.message);
+    }
+});
 /**
  * Determines the status of the next beat in the push route handling.
  * @param {string} status - The reported new status.

@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from "vue-router";
 
+import Reports from "./pages/Reports.vue";
 import EmptyLayout from "./layouts/EmptyLayout.vue";
 import Layout from "./layouts/Layout.vue";
 import Dashboard from "./pages/Dashboard.vue";
@@ -44,6 +45,11 @@ const routes = [
         path: "/empty",
         component: Layout,
         children: [
+            // 👇 صفحه ریپورت به اینجا منتقل شد تا نوبار بالا را داشته باشد 👇
+            {
+                path: "/reports",
+                component: Reports,
+            },
             {
                 path: "",
                 component: Dashboard,
@@ -100,7 +106,7 @@ const routes = [
                                 component: Notifications,
                             },
                             {
-                                path: "reverse-proxy",
+                                path: "reverseProxy",
                                 component: ReverseProxy,
                             },
                             {
@@ -108,15 +114,15 @@ const routes = [
                                 component: Tags,
                             },
                             {
-                                path: "monitor-history",
+                                path: "monitorHistory",
                                 component: MonitorHistory,
                             },
                             {
-                                path: "docker-hosts",
+                                path: "dockerHosts",
                                 component: DockerHosts,
                             },
                             {
-                                path: "remote-browsers",
+                                path: "remoteBrowsers",
                                 component: RemoteBrowsers,
                             },
                             {
@@ -124,7 +130,7 @@ const routes = [
                                 component: Security,
                             },
                             {
-                                path: "api-keys",
+                                path: "apiKeys",
                                 component: APIKeys,
                             },
                             {
@@ -138,11 +144,11 @@ const routes = [
                         ],
                     },
                     {
-                        path: "/manage-status-page",
+                        path: "/manageStatusPage",
                         component: ManageStatusPage,
                     },
                     {
-                        path: "/add-status-page",
+                        path: "/addStatusPage",
                         component: AddStatusPage,
                     },
                     {
@@ -150,7 +156,7 @@ const routes = [
                         component: ManageMaintenance,
                     },
                     {
-                        path: "/add-maintenance",
+                        path: "/addMaintenance",
                         component: EditMaintenance,
                     },
                     {
@@ -170,11 +176,11 @@ const routes = [
         component: Setup,
     },
     {
-        path: "/setup-database",
+        path: "/setupDatabase",
         component: SetupDatabase,
     },
     {
-        path: "/status-page",
+        path: "/statusPage",
         component: StatusPage,
     },
     {

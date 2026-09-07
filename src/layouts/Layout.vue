@@ -45,6 +45,12 @@
                         {{ $t("Dashboard") }}
                     </router-link>
                 </li>
+                <li v-if="$root.loggedIn" class="nav-item me-2">
+                    <router-link to="/reports" class="nav-link" :class="{ active: $route.path === '/reports' }">
+                        <font-awesome-icon icon="file-export" />
+                        Reports
+                    </router-link>
+                </li>
                 <li v-if="$root.loggedIn" class="nav-item">
                     <div class="dropdown dropdown-profile-pic">
                         <div class="nav-link" data-bs-toggle="dropdown">
