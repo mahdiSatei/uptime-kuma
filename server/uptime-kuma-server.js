@@ -232,9 +232,12 @@ class UptimeKumaServer {
      * @returns {Promise<void>}
      */
     async sendUpdateMonitorIntoList(socket, monitorID) {
-        let list = await this.getMonitorJSONList(socket.userID, monitorID);
+        // ۱. پارامتر اول را null می‌گذاریم تا مانیتور بدون فیلتر کاربر واکشی شود
+        let list = await this.getMonitorJSONList(null, monitorID);
+        
+        // ۲. به جای to(socket.userID) از io.emit استفاده می‌کنیم تا همه کاربران زنده آپدیت را دریافت کنند
         if (list && list[monitorID]) {
-            this.io.to(socket.userID).emit("updateMonitorIntoList", list);
+            this.io.emit("updateMonitorIntoList", list);
         }
     }
 
@@ -245,7 +248,7 @@ class UptimeKumaServer {
      * @returns {Promise<void>}
      */
     async sendDeleteMonitorFromList(socket, monitorID) {
-        this.io.to(socket.userID).emit("deleteMonitorFromList", monitorID);
+        this.io.emit("deleteMonitorFromList", monitorID);
     }
 
     /**
