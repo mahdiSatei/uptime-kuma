@@ -48,6 +48,7 @@ if (!semver.satisfies(nodeVersion, requiredNodeVersions)) {
 const args = require("args-parser")(process.argv);
 const { sleep, log, getRandomInt, genSecret, isDev } = require("../src/util");
 const config = require("./config");
+const { ROLES, checkRole } = require("./rbac"); // <-- ماژول کنترل نقش‌ها
 
 process.title = "uptime-kuma";
 
@@ -256,10 +257,6 @@ let needSetup = false;
 
     log.debug("server", "Adding route");
 
-    // ***************************
-    // Normal Router here
-    // ***************************
-
     // Entry Page
     app.get("/", async (request, response) => {
         let hostname = request.hostname;
@@ -348,10 +345,7 @@ let needSetup = false;
         response.send(txt);
     });
 
-    // Basic Auth Router here
-
     // Prometheus API metrics  /metrics
-    // With Basic Auth using the first user's username/password
     app.get("/metrics", apiAuth, prometheusAPIMetrics());
 
     app.use(
@@ -376,7 +370,7 @@ let needSetup = false;
     const statusPageRouter = require("./routers/status-page-router");
     app.use(statusPageRouter);
 
-    // Universal Route Handler, must be at the end of all express routes.
+    // Universal Route Handler
     app.get("*", async (_request, response) => {
         if (_request.originalUrl.startsWith("/upload/")) {
             response.status(404).send("File not found.");
@@ -411,7 +405,6 @@ let needSetup = false;
                 let user = await R.findOne("user", " username = ? AND active = 1 ", [decoded.username]);
 
                 if (user) {
-                    // Check if the password changed
                     if (decoded.h !== shake256(user.password, SHAKE256_LENGTH)) {
                         throw new Error("The token is invalid due to password change or old token");
                     }
@@ -424,6 +417,7 @@ let needSetup = false;
 
                     callback({
                         ok: true,
+                        role: socket.userRole,
                     });
                 } else {
                     log.info("auth", `Inactive or deleted user ${decoded.username}. IP=${clientIP}`);
@@ -452,7 +446,6 @@ let needSetup = false;
 
             log.info("auth", `Login by username + password. IP=${clientIP}`);
 
-            // Checking
             if (typeof callback !== "function") {
                 return;
             }
@@ -461,7 +454,6 @@ let needSetup = false;
                 return;
             }
 
-            // Login Rate Limit
             if (!(await loginRateLimiter.pass(callback))) {
                 log.info("auth", `Too many failed requests for user ${data.username}. IP=${clientIP}`);
                 return;
@@ -470,14 +462,18 @@ let needSetup = false;
             let user = await login(data.username, data.password);
 
             if (user) {
+                const userRole = user.role || "admin";
+
                 if (user.twofa_status === 0) {
                     await afterLogin(socket, user);
+                    socket.userRole = userRole;
 
                     log.info("auth", `Successfully logged in user ${data.username}. IP=${clientIP}`);
 
                     callback({
                         ok: true,
                         token: User.createJWT(user, server.jwtSecret),
+                        role: userRole,
                     });
                 }
 
@@ -494,6 +490,7 @@ let needSetup = false;
 
                     if (user.twofa_last_token !== data.token && verify) {
                         await afterLogin(socket, user);
+                        socket.userRole = userRole;
 
                         await R.exec("UPDATE `user` SET twofa_last_token = ? WHERE id = ? ", [
                             data.token,
@@ -505,6 +502,7 @@ let needSetup = false;
                         callback({
                             ok: true,
                             token: User.createJWT(user, server.jwtSecret),
+                            role: userRole,
                         });
                     } else {
                         log.warn("auth", `Invalid token provided for user ${data.username}. IP=${clientIP}`);
@@ -528,13 +526,13 @@ let needSetup = false;
         });
 
         socket.on("logout", async (callback) => {
-            // Rate Limit
             if (!(await loginRateLimiter.pass(callback))) {
                 return;
             }
 
             socket.leave(socket.userID);
             socket.userID = null;
+            socket.userRole = null;
 
             if (typeof callback === "function") {
                 callback();
@@ -555,10 +553,6 @@ let needSetup = false;
                 if (user.twofa_status === 0) {
                     let newSecret = genSecret();
                     let encodedSecret = base32.encode(newSecret);
-
-                    // Google authenticator doesn't like equal signs
-                    // The fix is found at https://github.com/guyht/notp
-                    // Related issue: https://github.com/louislam/uptime-kuma/issues/486
                     encodedSecret = encodedSecret.toString().replace(/=/g, "");
 
                     let uri = `otpauth://totp/Uptime%20Kuma:${user.username}?secret=${encodedSecret}`;
@@ -717,6 +711,7 @@ let needSetup = false;
                 let user = R.dispense("user");
                 user.username = username;
                 user.password = await passwordHash.generate(password);
+                user.role = "admin"; // کاربر اولیه همواره ادمین است
                 await R.store(user);
 
                 needSetup = false;
@@ -736,19 +731,20 @@ let needSetup = false;
         });
 
         // ***************************
-        // Auth Only API
+        // Auth Only API (With RBAC Guards)
         // ***************************
 
-        // Add a new monitor
+        // Add a new monitor (Admin & Editor only)
         socket.on("add", async (monitor, callback) => {
             try {
                 checkLogin(socket);
+                checkRole(socket, [ROLES.ADMIN, ROLES.EDITOR]);
+
                 let bean = R.dispense("monitor");
 
                 let notificationIDList = monitor.notificationIDList;
                 delete monitor.notificationIDList;
 
-                // Ensure status code ranges are strings
                 if (!monitor.accepted_statuscodes.every((code) => typeof code === "string")) {
                     throw new Error("Accepted status codes are not all strings");
                 }
@@ -757,15 +753,9 @@ let needSetup = false;
 
                 monitor.kafkaProducerBrokers = JSON.stringify(monitor.kafkaProducerBrokers);
                 monitor.kafkaProducerSaslOptions = JSON.stringify(monitor.kafkaProducerSaslOptions);
-
                 monitor.conditions = JSON.stringify(monitor.conditions);
-
                 monitor.rabbitmqNodes = JSON.stringify(monitor.rabbitmqNodes);
 
-                /*
-                 * List of frontend-only properties that should not be saved to the database.
-                 * Should clean up before saving to the database.
-                 */
                 const frontendOnlyProperties = [
                     "humanReadableInterval",
                     "globalpingdnsresolvetypeoptions",
@@ -778,7 +768,6 @@ let needSetup = false;
                 }
 
                 bean.import(monitor);
-                // Map camelCase frontend property to snake_case database column
                 if (monitor.retryOnlyOnStatusCodeFailure !== undefined) {
                     bean.retry_only_on_status_code_failure = monitor.retryOnlyOnStatusCodeFailure;
                 }
@@ -789,7 +778,6 @@ let needSetup = false;
                 await R.store(bean);
 
                 await updateMonitorNotification(bean.id, notificationIDList);
-
                 await server.sendUpdateMonitorIntoList(socket, bean.id);
 
                 if (monitor.active !== false) {
@@ -814,19 +802,19 @@ let needSetup = false;
             }
         });
 
-        // Edit a monitor
+        // Edit a monitor (Admin & Editor only)
         socket.on("editMonitor", async (monitor, callback) => {
             try {
                 let removeGroupChildren = false;
                 checkLogin(socket);
+                checkRole(socket, [ROLES.ADMIN, ROLES.EDITOR]);
 
                 let bean = await R.findOne("monitor", " id = ? ", [monitor.id]);
 
-                if (bean.user_id !== socket.userID) {
+                if (socket.userRole !== ROLES.ADMIN && bean.user_id !== socket.userID) {
                     throw new Error("Permission denied.");
                 }
 
-                // Check if Parent is Descendant (would cause endless loop)
                 if (monitor.parent !== null) {
                     const childIDs = await Monitor.getAllChildrenIDs(monitor.id);
                     if (childIDs.includes(monitor.parent)) {
@@ -834,12 +822,10 @@ let needSetup = false;
                     }
                 }
 
-                // Remove children if monitor type has changed (from group to non-group)
                 if (bean.type === "group" && monitor.type !== bean.type) {
                     removeGroupChildren = true;
                 }
 
-                // Ensure status code ranges are strings
                 if (!monitor.accepted_statuscodes.every((code) => typeof code === "string")) {
                     throw new Error("Accepted status codes are not all strings");
                 }
@@ -934,7 +920,6 @@ let needSetup = false;
                 bean.kafkaProducerMessage = monitor.kafkaProducerMessage;
                 bean.cacheBust = monitor.cacheBust;
                 bean.kafkaProducerSsl = monitor.kafkaProducerSsl;
-                bean.kafkaProducerAllowAutoTopicCreation = monitor.kafkaProducerAllowAutoTopicCreation;
                 bean.gamedigGivenPortOnly = monitor.gamedigGivenPortOnly;
                 bean.gamedigToken = monitor.gamedigToken;
                 bean.remote_browser = monitor.remote_browser;
@@ -956,7 +941,6 @@ let needSetup = false;
                 bean.ntp_time_offset_threshold = monitor.ntpTimeOffsetThreshold;
                 bean.ntp_root_dispersion_threshold = monitor.ntpRootDispersionThreshold;
 
-                // ping advanced options
                 bean.ping_numeric = monitor.ping_numeric;
                 bean.ping_count = monitor.ping_count;
                 bean.ping_per_request_timeout = monitor.ping_per_request_timeout;
@@ -1014,7 +998,10 @@ let needSetup = false;
 
                 log.info("monitor", `Get Monitor: ${monitorID} User ID: ${socket.userID}`);
 
-                let monitor = await R.findOne("monitor", " id = ? AND user_id = ? ", [monitorID, socket.userID]);
+                let monitor = await R.findOne("monitor", " id = ? ", [monitorID]);
+                if (!monitor) {
+                    throw new Error("Monitor not found");
+                }
                 const monitorData = [{ id: monitor.id, active: monitor.active }];
                 const preloadData = await Monitor.preparePreloadData(monitorData);
                 callback({
@@ -1029,7 +1016,6 @@ let needSetup = false;
             }
         });
 
-        // partial { type, url, hostname, grpcUrl }
         socket.on("checkDomain", async (partial, callback) => {
             try {
                 checkLogin(socket);
@@ -1085,10 +1071,12 @@ let needSetup = false;
             }
         });
 
-        // Start or Resume the monitor
+        // Start or Resume the monitor (Admin & Editor only)
         socket.on("resumeMonitor", async (monitorID, callback) => {
             try {
                 checkLogin(socket);
+                checkRole(socket, [ROLES.ADMIN, ROLES.EDITOR]);
+
                 await startMonitor(socket.userID, monitorID);
                 await server.sendUpdateMonitorIntoList(socket, monitorID);
 
@@ -1105,9 +1093,12 @@ let needSetup = false;
             }
         });
 
+        // Pause the monitor (Admin & Editor only)
         socket.on("pauseMonitor", async (monitorID, callback) => {
             try {
                 checkLogin(socket);
+                checkRole(socket, [ROLES.ADMIN, ROLES.EDITOR]);
+
                 await pauseMonitor(socket.userID, monitorID);
                 await server.sendUpdateMonitorIntoList(socket, monitorID);
 
@@ -1124,38 +1115,28 @@ let needSetup = false;
             }
         });
 
+        // Delete monitor (Admin & Editor only)
         socket.on("deleteMonitor", async (monitorID, deleteChildren, callback) => {
             try {
-                // Backward compatibility: if deleteChildren is omitted, the second parameter is the callback
                 if (typeof deleteChildren === "function") {
                     callback = deleteChildren;
                     deleteChildren = false;
                 }
 
                 checkLogin(socket);
+                checkRole(socket, [ROLES.ADMIN, ROLES.EDITOR]);
 
                 const startTime = Date.now();
+                const monitor = await R.findOne("monitor", " id = ? ", [monitorID]);
 
-                // Check if this is a group monitor
-                const monitor = await R.findOne("monitor", " id = ? AND user_id = ? ", [monitorID, socket.userID]);
-
-                // Log with context about deletion type
-                if (monitor && monitor.type === "group") {
-                    if (deleteChildren) {
-                        log.info("manage", `Delete Group and Children: ${monitorID} User ID: ${socket.userID}`);
-                    } else {
-                        log.info("manage", `Delete Group (unlink children): ${monitorID} User ID: ${socket.userID}`);
-                    }
-                } else {
-                    log.info("manage", `Delete Monitor: ${monitorID} User ID: ${socket.userID}`);
+                if (!monitor) {
+                    throw new Error("Monitor not found");
                 }
 
-                if (monitor && monitor.type === "group") {
-                    // Get all children before processing
+                if (monitor.type === "group") {
                     const children = await Monitor.getChildren(monitorID);
 
                     if (deleteChildren) {
-                        // Delete all child monitors recursively
                         if (children && children.length > 0) {
                             for (const child of children) {
                                 await Monitor.deleteMonitorRecursively(child.id, socket.userID);
@@ -1163,10 +1144,7 @@ let needSetup = false;
                             }
                         }
                     } else {
-                        // Unlink all children from the group (set parent to null)
                         await Monitor.unlinkAllChildren(monitorID);
-
-                        // Notify frontend to update each child monitor's parent to null
                         if (children && children.length > 0) {
                             for (const child of children) {
                                 await server.sendUpdateMonitorIntoList(socket, child.id);
@@ -1175,30 +1153,11 @@ let needSetup = false;
                     }
                 }
 
-                // Delete the monitor itself
                 await Monitor.deleteMonitor(monitorID, socket.userID);
-
-                // Fix #2880
                 apicache.clear();
 
                 const endTime = Date.now();
-
-                // Log completion with context about children handling
-                if (monitor && monitor.type === "group") {
-                    if (deleteChildren) {
-                        log.info(
-                            "DB",
-                            `Delete Monitor completed (group and children deleted) in: ${endTime - startTime} ms`
-                        );
-                    } else {
-                        log.info(
-                            "DB",
-                            `Delete Monitor completed (group deleted, children unlinked) in: ${endTime - startTime} ms`
-                        );
-                    }
-                } else {
-                    log.info("DB", `Delete Monitor completed in: ${endTime - startTime} ms`);
-                }
+                log.info("DB", `Delete Monitor completed in: ${endTime - startTime} ms`);
 
                 callback({
                     ok: true,
@@ -1217,9 +1176,7 @@ let needSetup = false;
         socket.on("getTags", async (callback) => {
             try {
                 checkLogin(socket);
-
                 const list = await R.findAll("tag");
-
                 callback({
                     ok: true,
                     tags: list.map((bean) => bean.toJSON()),
@@ -1232,9 +1189,11 @@ let needSetup = false;
             }
         });
 
+        // Add Tag (Admin & Editor only)
         socket.on("addTag", async (tag, callback) => {
             try {
                 checkLogin(socket);
+                checkRole(socket, [ROLES.ADMIN, ROLES.EDITOR]);
 
                 let bean = R.dispense("tag");
                 bean.name = tag.name;
@@ -1253,9 +1212,11 @@ let needSetup = false;
             }
         });
 
+        // Edit Tag (Admin & Editor only)
         socket.on("editTag", async (tag, callback) => {
             try {
                 checkLogin(socket);
+                checkRole(socket, [ROLES.ADMIN, ROLES.EDITOR]);
 
                 let bean = await R.findOne("tag", " id = ? ", [tag.id]);
                 if (bean == null) {
@@ -1284,9 +1245,11 @@ let needSetup = false;
             }
         });
 
+        // Delete Tag (Admin & Editor only)
         socket.on("deleteTag", async (tagID, callback) => {
             try {
                 checkLogin(socket);
+                checkRole(socket, [ROLES.ADMIN, ROLES.EDITOR]);
 
                 await R.exec("DELETE FROM tag WHERE id = ? ", [tagID]);
 
@@ -1303,9 +1266,11 @@ let needSetup = false;
             }
         });
 
+        // Tag Associations (Admin & Editor only)
         socket.on("addMonitorTag", async (tagID, monitorID, value, callback) => {
             try {
                 checkLogin(socket);
+                checkRole(socket, [ROLES.ADMIN, ROLES.EDITOR]);
 
                 await R.exec("INSERT INTO monitor_tag (tag_id, monitor_id, value) VALUES (?, ?, ?)", [
                     tagID,
@@ -1331,6 +1296,7 @@ let needSetup = false;
         socket.on("editMonitorTag", async (tagID, monitorID, value, callback) => {
             try {
                 checkLogin(socket);
+                checkRole(socket, [ROLES.ADMIN, ROLES.EDITOR]);
 
                 await R.exec("UPDATE monitor_tag SET value = ? WHERE tag_id = ? AND monitor_id = ?", [
                     value,
@@ -1356,6 +1322,7 @@ let needSetup = false;
         socket.on("deleteMonitorTag", async (tagID, monitorID, value, callback) => {
             try {
                 checkLogin(socket);
+                checkRole(socket, [ROLES.ADMIN, ROLES.EDITOR]);
 
                 await R.exec("DELETE FROM monitor_tag WHERE tag_id = ? AND monitor_id = ? AND value = ?", [
                     tagID,
@@ -1381,7 +1348,6 @@ let needSetup = false;
         socket.on("monitorImportantHeartbeatListCount", async (monitorID, callback) => {
             try {
                 checkLogin(socket);
-
                 let count;
                 if (monitorID == null) {
                     count = await R.count("heartbeat", "important = 1");
@@ -1404,7 +1370,6 @@ let needSetup = false;
         socket.on("monitorImportantHeartbeatListPaged", async (monitorID, offset, count, callback) => {
             try {
                 checkLogin(socket);
-
                 let list;
                 if (monitorID == null) {
                     list = await R.find(
@@ -1496,22 +1461,17 @@ let needSetup = false;
             }
         });
 
+        // Set Settings (Admin only)
         socket.on("setSettings", async (data, currentPassword, callback) => {
             try {
                 checkLogin(socket);
+                checkRole(socket, [ROLES.ADMIN]);
 
-                // If currently is disabled auth, don't need to check
-                // Disabled Auth + Want to Disable Auth => No Check
-                // Disabled Auth + Want to Enable Auth => No Check
-                // Enabled Auth + Want to Disable Auth => Check!!
-                // Enabled Auth + Want to Enable Auth => No Check
                 const currentDisabledAuth = await setting("disableAuth");
                 if (!currentDisabledAuth && data.disableAuth) {
                     await doubleCheckPassword(socket, currentPassword);
                 }
 
-                // Log out all clients if enabling auth
-                // GHSA-23q2-5gf8-gjpp
                 if (currentDisabledAuth && !data.disableAuth) {
                     server.disconnectAllSocketClients(socket.userID, socket.id);
                 }
@@ -1522,18 +1482,15 @@ let needSetup = false;
                 await setSettings("general", data);
                 server.entryPage = data.entryPage;
 
-                // Also need to apply timezone globally
                 if (data.serverTimezone) {
                     await server.setTimezone(data.serverTimezone);
                 }
 
-                // If Chrome Executable is changed, need to reset the browser
                 if (previousChromeExecutable !== data.chromeExecutable) {
                     log.info("settings", "Chrome executable is changed. Resetting Chrome...");
                     await resetChrome();
                 }
 
-                // Update nscd status
                 if (previousNSCDStatus !== data.nscd) {
                     if (data.nscd) {
                         await server.startNSCDServices();
@@ -1558,10 +1515,11 @@ let needSetup = false;
             }
         });
 
-        // Add or Edit
+        // Add or Edit Notification (Admin & Editor only)
         socket.on("addNotification", async (notification, notificationID, callback) => {
             try {
                 checkLogin(socket);
+                checkRole(socket, [ROLES.ADMIN, ROLES.EDITOR]);
 
                 let notificationBean = await Notification.save(notification, notificationID, socket.userID);
                 await sendNotificationList(socket);
@@ -1580,9 +1538,11 @@ let needSetup = false;
             }
         });
 
+        // Delete Notification (Admin & Editor only)
         socket.on("deleteNotification", async (notificationID, callback) => {
             try {
                 checkLogin(socket);
+                checkRole(socket, [ROLES.ADMIN, ROLES.EDITOR]);
 
                 await Notification.delete(notificationID, socket.userID);
                 await sendNotificationList(socket);
@@ -1600,9 +1560,11 @@ let needSetup = false;
             }
         });
 
+        // Test Notification (Admin & Editor only)
         socket.on("testNotification", async (notification, callback) => {
             try {
                 checkLogin(socket);
+                checkRole(socket, [ROLES.ADMIN, ROLES.EDITOR]);
 
                 let msg = await Notification.send(notification, notification.name + " Testing");
 
@@ -1655,9 +1617,11 @@ let needSetup = false;
             }
         });
 
+        // Clear Events (Admin only)
         socket.on("clearEvents", async (monitorID, callback) => {
             try {
                 checkLogin(socket);
+                checkRole(socket, [ROLES.ADMIN]);
 
                 log.info("manage", `Clear Events Monitor: ${monitorID} User ID: ${socket.userID}`);
 
@@ -1674,9 +1638,11 @@ let needSetup = false;
             }
         });
 
+        // Clear Heartbeats (Admin only)
         socket.on("clearHeartbeats", async (monitorID, callback) => {
             try {
                 checkLogin(socket);
+                checkRole(socket, [ROLES.ADMIN]);
 
                 log.info("manage", `Clear Heartbeats Monitor: ${monitorID} User ID: ${socket.userID}`);
 
@@ -1702,15 +1668,16 @@ let needSetup = false;
             }
         });
 
+        // Clear All Statistics (Admin only)
         socket.on("clearStatistics", async (callback) => {
             try {
                 checkLogin(socket);
+                checkRole(socket, [ROLES.ADMIN]);
 
                 log.info("manage", `Clear Statistics User ID: ${socket.userID}`);
 
                 await UptimeCalculator.clearAllStatistics();
 
-                // Restart all monitors to reset the stats
                 for (let monitorID in server.monitorList) {
                     const monitor = server.monitorList[monitorID];
                     if (monitor.active) {
@@ -1728,8 +1695,67 @@ let needSetup = false;
                 });
             }
         });
+        
+        socket.on("getUserList", async (callback) => {
+            try {
+                checkLogin(socket);
+                checkRole(socket, [ROLES.ADMIN]);
 
-        // Status Page Socket Handler for admin only
+                let users = await R.getAll("SELECT id, username, role FROM `user`");
+                callback({
+                    ok: true,
+                    data: users,
+                });
+            } catch (e) {
+                callback({ ok: false, msg: e.message });
+            }
+        });
+
+        // ساخت کاربر با نقش مشخص (فقط ادمین)
+        socket.on("addUser", async (data, callback) => {
+            try {
+                checkLogin(socket);
+                checkRole(socket, [ROLES.ADMIN]);
+
+                if (!data.username || !data.password) {
+                    throw new Error("نام کاربری و رمز عبور الزامی است");
+                }
+
+                let count = await R.count("user", " username = ? ", [data.username]);
+                if (count > 0) {
+                    throw new Error("این نام کاربری قبلاً ثبت شده است");
+                }
+
+                let user = R.dispense("user");
+                user.username = data.username;
+                user.password = await passwordHash.generate(data.password);
+                user.role = data.role || "viewer";
+                user.active = 1;
+                await R.store(user);
+
+                callback({ ok: true, msg: "کاربر با موفقیت ایجاد شد" });
+            } catch (e) {
+                callback({ ok: false, msg: e.message });
+            }
+        });
+
+        // حذف کاربر (فقط ادمین)
+        socket.on("deleteUser", async (userID, callback) => {
+            try {
+                checkLogin(socket);
+                checkRole(socket, [ROLES.ADMIN]);
+
+                if (socket.userID === userID) {
+                    throw new Error("امکان حذف حساب کاربری خودتان وجود ندارد");
+                }
+
+                await R.exec("DELETE FROM `user` WHERE id = ? ", [userID]);
+                callback({ ok: true, msg: "کاربر با موفقیت حذف شد" });
+            } catch (e) {
+                callback({ ok: false, msg: e.message });
+            }
+        });
+        // Sub-Socket Handlers
         statusPageSocketHandler(socket);
         cloudflaredSocketHandler(socket);
         databaseSocketHandler(socket);
@@ -1742,10 +1768,6 @@ let needSetup = false;
         chartSocketHandler(socket);
 
         log.debug("server", "added all socket handlers");
-
-        // ***************************
-        // Better do anything after added all socket handlers here
-        // ***************************
 
         log.debug("auth", "check auto login");
         if (await setting("disableAuth")) {
@@ -1772,23 +1794,16 @@ let needSetup = false;
         printServerUrls("server", port, hostname, config.isSSL);
 
         await startMonitors();
-
-        // Put this here. Start background jobs after the db and server is ready to prevent clear up during db migration.
         await initBackgroundJobs();
 
         checkVersion.startInterval();
     });
 
-    // Start cloudflared at the end if configured
     await cloudflaredAutoStart(cloudflaredToken);
 })();
 
 /**
  * Update notifications for a given monitor
- * @param {number} monitorID ID of monitor to update
- * @param {number[]} notificationIDList List of new notification
- * providers to add
- * @returns {Promise<void>}
  */
 async function updateMonitorNotification(monitorID, notificationIDList) {
     await R.exec("DELETE FROM monitor_notification WHERE monitor_id = ? ", [monitorID]);
@@ -1805,10 +1820,6 @@ async function updateMonitorNotification(monitorID, notificationIDList) {
 
 /**
  * Check if a given user owns a specific monitor
- * @param {number} userID ID of user to check
- * @param {number} monitorID ID of monitor to check
- * @returns {Promise<void>}
- * @throws {Error} The specified user does not own the monitor
  */
 async function checkOwner(userID, monitorID) {
     let row = await R.getRow("SELECT id FROM monitor WHERE id = ? AND user_id = ? ", [monitorID, userID]);
@@ -1820,26 +1831,31 @@ async function checkOwner(userID, monitorID) {
 
 /**
  * Function called after user login
- * This function is used to send the heartbeat list of a monitor.
- * @param {Socket} socket Socket.io instance
- * @param {object} user User object
- * @returns {Promise<void>}
  */
 async function afterLogin(socket, user) {
     socket.userID = user.id;
+    socket.userRole = user.role || "admin";
     socket.join(user.id);
 
+    socket.emit("userRole", socket.userRole);
+
     let monitorList = await server.sendMonitorList(socket);
-    await Promise.allSettled([
+
+    const initialPromises = [
         sendInfo(socket),
         server.sendMaintenanceList(socket),
         sendNotificationList(socket),
         sendProxyList(socket),
         sendDockerHostList(socket),
-        sendAPIKeyList(socket),
         sendRemoteBrowserList(socket),
         sendMonitorTypeList(socket),
-    ]);
+    ];
+
+    if (socket.userRole === "admin") {
+        initialPromises.push(sendAPIKeyList(socket));
+    }
+
+    await Promise.allSettled(initialPromises);
 
     await StatusPage.sendStatusPageList(io, socket);
 
@@ -1851,9 +1867,7 @@ async function afterLogin(socket, user) {
 
     await Promise.all(monitorPromises);
 
-    // Set server timezone from client browser if not set
-    // It should be run once only
-    if (!(await Settings.get("initServerTimezone"))) {
+    if (socket.userRole === "admin" && !(await Settings.get("initServerTimezone"))) {
         log.debug("server", "emit initServerTimezone");
         socket.emit("initServerTimezone");
     }
@@ -1861,16 +1875,12 @@ async function afterLogin(socket, user) {
 
 /**
  * Initialize the database
- * @param {boolean} testMode Should the connection be
- * started in test mode?
- * @returns {Promise<void>}
  */
 async function initDatabase(testMode = false) {
     log.debug("server", "Connecting to the database");
     await Database.connect(testMode);
     log.info("server", "Connected to the database");
 
-    // Patch the database
     await Database.patch(port, hostname);
 
     let jwtSecretBean = await R.findOne("setting", " `key` = ? ", ["jwtSecret"]);
@@ -1883,7 +1893,6 @@ async function initDatabase(testMode = false) {
         log.debug("server", "Load JWT secret from database.");
     }
 
-    // If there is no record in user table, it is a new Uptime Kuma instance, need to setup
     if ((await R.knex("user").count("id as count").first()).count === 0) {
         log.info("server", "No user, need setup");
         needSetup = true;
@@ -1894,18 +1903,13 @@ async function initDatabase(testMode = false) {
 
 /**
  * Start the specified monitor
- * @param {number} userID ID of user who owns monitor
- * @param {number} monitorID ID of monitor to start
- * @returns {Promise<void>}
  */
 async function startMonitor(userID, monitorID) {
-    await checkOwner(userID, monitorID);
+    let monitor = await R.findOne("monitor", " id = ? ", [monitorID]);
 
     log.info("manage", `Resume Monitor: ${monitorID} User ID: ${userID}`);
 
-    await R.exec("UPDATE monitor SET active = 1 WHERE id = ? AND user_id = ? ", [monitorID, userID]);
-
-    let monitor = await R.findOne("monitor", " id = ? ", [monitorID]);
+    await R.exec("UPDATE monitor SET active = 1 WHERE id = ? ", [monitorID]);
 
     if (monitor.id in server.monitorList) {
         await server.monitorList[monitor.id].stop();
@@ -1917,9 +1921,6 @@ async function startMonitor(userID, monitorID) {
 
 /**
  * Restart a given monitor
- * @param {number} userID ID of user who owns monitor
- * @param {number} monitorID ID of monitor to start
- * @returns {Promise<void>}
  */
 async function restartMonitor(userID, monitorID) {
     return await startMonitor(userID, monitorID);
@@ -1927,16 +1928,11 @@ async function restartMonitor(userID, monitorID) {
 
 /**
  * Pause a given monitor
- * @param {number} userID ID of user who owns monitor
- * @param {number} monitorID ID of monitor to start
- * @returns {Promise<void>}
  */
 async function pauseMonitor(userID, monitorID) {
-    await checkOwner(userID, monitorID);
-
     log.info("manage", `Pause Monitor: ${monitorID} User ID: ${userID}`);
 
-    await R.exec("UPDATE monitor SET active = 0 WHERE id = ? AND user_id = ? ", [monitorID, userID]);
+    await R.exec("UPDATE monitor SET active = 0 WHERE id = ? ", [monitorID]);
 
     if (monitorID in server.monitorList) {
         await server.monitorList[monitorID].stop();
@@ -1946,7 +1942,6 @@ async function pauseMonitor(userID, monitorID) {
 
 /**
  * Resume active monitors
- * @returns {Promise<void>}
  */
 async function startMonitors() {
     let list = await R.find("monitor", " active = 1 ");
@@ -1961,16 +1956,12 @@ async function startMonitors() {
         } catch (e) {
             log.error("monitor", e);
         }
-        // Give some delays, so all monitors won't make request at the same moment when just start the server.
         await sleep(getRandomInt(300, 1000));
     }
 }
 
 /**
  * Shutdown the application
- * Stops all monitors and closes the database connection.
- * @param {string} signal The signal that triggered this function to be called.
- * @returns {Promise<void>}
  */
 async function shutdownFunction(signal) {
     log.info("server", "Shutdown requested");
@@ -1997,7 +1988,6 @@ async function shutdownFunction(signal) {
 
 /**
  * Final function called before application exits
- * @returns {void}
  */
 function finalFunction() {
     log.info("server", "Graceful shutdown successful!");
@@ -2005,14 +1995,13 @@ function finalFunction() {
 
 gracefulShutdown(server.httpServer, {
     signals: "SIGINT SIGTERM",
-    timeout: 30000, // timeout: 30 secs
-    development: false, // not in dev mode
-    forceExit: true, // triggers process.exit() at the end of shutdown process
-    onShutdown: shutdownFunction, // shutdown function (async) - e.g. for cleanup DB, ...
-    finally: finalFunction, // finally function (sync) - e.g. for logging
+    timeout: 30000,
+    development: false,
+    forceExit: true,
+    onShutdown: shutdownFunction,
+    finally: finalFunction,
 });
 
-// Catch unexpected errors here
 let unexpectedErrorHandler = (error, promise) => {
     console.trace(error);
     UptimeKumaServer.errorLog(error, false);

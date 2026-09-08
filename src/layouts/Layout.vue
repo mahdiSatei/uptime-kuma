@@ -33,7 +33,8 @@
             </a>
 
             <ul class="nav nav-pills">
-                <li v-if="$root.loggedIn" class="nav-item me-2">
+                <!-- Status Pages: فقط برای Admin و Editor -->
+                <li v-if="$root.loggedIn && $root.userRole !== 'viewer'" class="nav-item me-2">
                     <router-link to="/manage-status-page" class="nav-link">
                         <font-awesome-icon icon="stream" />
                         {{ $t("Status Pages") }}
@@ -54,7 +55,7 @@
 
                         <!-- Header's Dropdown Menu -->
                         <ul class="dropdown-menu">
-                            <!-- Username -->
+                            <!-- Username & Role Badge -->
                             <li>
                                 <i18n-t
                                     v-if="$root.username != null"
@@ -63,6 +64,9 @@
                                     class="dropdown-item-text"
                                 >
                                     <strong>{{ $root.username }}</strong>
+                                    <span class="badge bg-secondary ms-2 text-uppercase" style="font-size: 10px;">
+                                        {{ $root.userRole }}
+                                    </span>
                                 </i18n-t>
                                 <span v-if="$root.username == null" class="dropdown-item-text">
                                     {{ $t("signedInDispDisabled") }}
@@ -71,8 +75,8 @@
 
                             <li><hr class="dropdown-divider" /></li>
 
-                            <!-- Functions -->
-                            <li>
+                            <!-- Maintenance: فقط برای Admin و Editor -->
+                            <li v-if="$root.userRole !== 'viewer'">
                                 <router-link
                                     to="/maintenance"
                                     class="dropdown-item"
@@ -83,7 +87,8 @@
                                 </router-link>
                             </li>
 
-                            <li>
+                            <!-- Settings: فقط و فقط Admin -->
+                            <li v-if="$root.userRole === 'admin'">
                                 <router-link
                                     to="/settings/general"
                                     class="dropdown-item"
@@ -130,7 +135,7 @@
             <Login v-if="!$root.loggedIn && $root.allowLoginDialog" />
         </main>
 
-        <!-- Mobile Only -->
+        <!-- Mobile Only Navigation -->
         <div v-if="$root.isMobile" style="width: 100%; height: calc(60px + env(safe-area-inset-bottom))" />
         <nav v-if="$root.isMobile && $root.loggedIn" class="bottom-nav">
             <router-link to="/dashboard" class="nav-link">
@@ -143,12 +148,14 @@
                 {{ $t("List") }}
             </router-link>
 
-            <router-link to="/add" class="nav-link">
+            <!-- دکمه Add در موبایل: فقط برای Admin و Editor -->
+            <router-link v-if="$root.userRole !== 'viewer'" to="/add" class="nav-link">
                 <div><font-awesome-icon icon="plus" /></div>
                 {{ $t("Add") }}
             </router-link>
 
-            <router-link to="/settings" class="nav-link">
+            <!-- تنظیمات در موبایل: فقط مخصوص Admin -->
+            <router-link v-if="$root.userRole === 'admin'" to="/settings" class="nav-link">
                 <div><font-awesome-icon icon="cog" /></div>
                 {{ $t("Settings") }}
             </router-link>
@@ -274,10 +281,12 @@ export default {
     text-align: center;
     white-space: nowrap;
     padding: 0 10px env(safe-area-inset-bottom);
+    display: flex;
+    justify-content: space-around;
 
     a {
         text-align: center;
-        width: 25%;
+        flex: 1;
         display: inline-block;
         height: 100%;
         padding: 8px 10px 0;

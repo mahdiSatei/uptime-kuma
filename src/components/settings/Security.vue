@@ -70,6 +70,7 @@
                 </form>
             </template>
 
+            <!-- 2FA Settings -->
             <div v-if="!settings.disableAuth" class="mt-5 mb-3">
                 <h5 class="my-4 settings-subheading">
                     {{ $t("Two Factor Authentication") }}
@@ -81,8 +82,87 @@
                 </div>
             </div>
 
+            <!-- بخش مدیریت کاربران (کاملاً بومی با تم Uptime Kuma) -->
+            <div v-if="!settings.disableAuth" class="mt-5 mb-3">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h5 class="settings-subheading mb-0">{{ $t("User Management") }}</h5>
+                    <button class="btn btn-primary btn-sm" type="button" @click="showAddUser = !showAddUser">
+                        <font-awesome-icon icon="plus" class="me-1" /> {{ $t("Add New User") }}
+                    </button>
+                </div>
+
+                <!-- فرم افزودن کاربر با پس‌زمینه دارک هماهنگ -->
+                <transition name="slide-fade">
+                    <div v-if="showAddUser" class="shadow-box p-3 mb-4 user-form-card">
+                        <h6 class="mb-3 fw-bold">{{ $t("Add User") }}</h6>
+                        <form @submit.prevent="addUser">
+                            <div class="row g-3">
+                                <div class="col-md-4">
+                                    <label class="form-label">{{ $t("Username") }}</label>
+                                    <input v-model="newUser.username" type="text" class="form-control" required autocomplete="off" />
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label">{{ $t("Password") }}</label>
+                                    <input v-model="newUser.password" type="password" class="form-control" required autocomplete="new-password" />
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label">{{ $t("Role") }}</label>
+                                    <select v-model="newUser.role" class="form-select">
+                                        <option value="admin">Admin (Full Access)</option>
+                                        <option value="editor">Editor (Can edit monitors)</option>
+                                        <option value="viewer">Viewer (Read-Only)</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="mt-3 text-end">
+                                <button type="button" class="btn btn-normal btn-sm me-2" @click="showAddUser = false">
+                                    {{ $t("Cancel") }}
+                                </button>
+                                <button type="submit" class="btn btn-primary btn-sm">
+                                    {{ $t("Save") }}
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </transition>
+
+                <!-- جدول لیست کاربران منطبق با تم سیستم -->
+                <table class="table table-borderless table-hover user-table mt-3">
+                    <thead>
+                        <tr>
+                            <th>{{ $t("Username") }}</th>
+                            <th>{{ $t("Role") }}</th>
+                            <th class="text-end">{{ $t("Actions") }}</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr v-for="u in userList" :key="u.id">
+                            <td class="align-middle fw-bold">{{ u.username }}</td>
+                            <td class="align-middle">
+                                <span class="badge rounded-pill text-uppercase px-2 py-1" :class="getRoleBadgeClass(u.role)">
+                                    {{ u.role || 'admin' }}
+                                </span>
+                            </td>
+                            <td class="text-end align-middle">
+                                <button 
+                                    v-if="u.username !== $root.username" 
+                                    class="btn btn-outline-danger btn-sm" 
+                                    type="button"
+                                    @click="deleteUser(u.id)"
+                                >
+                                    <font-awesome-icon icon="trash" /> {{ $t("Delete") }}
+                                </button>
+                                <span v-else class="text-secondary small fst-italic me-2">
+                                    ({{ $t("Current User") }})
+                                </span>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Advanced -->
             <div class="my-4">
-                <!-- Advanced -->
                 <h5 class="my-4 settings-subheading">{{ $t("Advanced") }}</h5>
 
                 <div class="mb-4">
@@ -161,6 +241,13 @@ export default {
                 newPassword: "",
                 repeatNewPassword: "",
             },
+            userList: [],
+            showAddUser: false,
+            newUser: {
+                username: "",
+                password: "",
+                role: "viewer",
+            },
         };
     },
 
@@ -182,11 +269,21 @@ export default {
         },
     },
 
+    mounted() {
+        this.getUserList();
+    },
+
     methods: {
-        /**
-         * Check new passwords match before saving them
-         * @returns {void}
-         */
+        getRoleBadgeClass(role) {
+            if (role === "admin") {
+                return "bg-danger";
+            } else if (role === "editor") {
+                return "bg-warning text-dark";
+            } else {
+                return "bg-info text-dark";
+            }
+        },
+
         savePassword() {
             if (this.password.newPassword !== this.password.repeatNewPassword) {
                 this.invalidPassword = true;
@@ -198,7 +295,6 @@ export default {
                         this.password.newPassword = "";
                         this.password.repeatNewPassword = "";
 
-                        // Update token of the current session
                         if (res.token) {
                             this.$root.storage().token = res.token;
                             this.$root.socket.token = res.token;
@@ -208,15 +304,40 @@ export default {
             }
         },
 
-        /**
-         * Disable authentication for web app access
-         * @returns {void}
-         */
+        getUserList() {
+            this.$root.getSocket().emit("getUserList", (res) => {
+                if (res.ok) {
+                    this.userList = res.data;
+                }
+            });
+        },
+
+        addUser() {
+            this.$root.getSocket().emit("addUser", this.newUser, (res) => {
+                this.$root.toastRes(res);
+                if (res.ok) {
+                    this.showAddUser = false;
+                    this.newUser.username = "";
+                    this.newUser.password = "";
+                    this.newUser.role = "viewer";
+                    this.getUserList();
+                }
+            });
+        },
+
+        deleteUser(userID) {
+            if (confirm("Are you sure you want to delete this user?")) {
+                this.$root.getSocket().emit("deleteUser", userID, (res) => {
+                    this.$root.toastRes(res);
+                    if (res.ok) {
+                        this.getUserList();
+                    }
+                });
+            }
+        },
+
         disableAuth() {
             this.settings.disableAuth = true;
-
-            // Need current password to disable auth
-            // Set it to empty if done
             this.saveSettings(() => {
                 this.password.currentPassword = "";
                 this.$root.username = null;
@@ -224,10 +345,6 @@ export default {
             }, this.password.currentPassword);
         },
 
-        /**
-         * Enable authentication for web app access
-         * @returns {void}
-         */
         enableAuth() {
             this.settings.disableAuth = false;
             this.saveSettings();
@@ -235,13 +352,45 @@ export default {
             location.reload();
         },
 
-        /**
-         * Show confirmation dialog for disable auth
-         * @returns {void}
-         */
         confirmDisableAuth() {
             this.$refs.confirmDisableAuth.show();
         },
     },
 };
 </script>
+
+<style lang="scss" scoped>
+@import "../../assets/vars.scss";
+
+.user-form-card {
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    background-color: #fff;
+
+    .dark & {
+        background-color: $dark-header-bg;
+        border-color: $dark-border-color;
+    }
+}
+
+.user-table {
+    thead th {
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: $secondary-text;
+        border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+
+        .dark & {
+            border-bottom-color: $dark-border-color;
+        }
+    }
+
+    tbody tr {
+        border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+
+        .dark & {
+            border-bottom-color: rgba(255, 255, 255, 0.05);
+        }
+    }
+}
+</style>

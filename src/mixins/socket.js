@@ -38,6 +38,7 @@ export default {
                 initedSocketIO: false,
             },
             username: null,
+            userRole: localStorage.userRole || "viewer", // <-- نگهداری نقش کاربر در فرانت‌اند
             remember: localStorage.remember !== "0",
             allowLoginDialog: false, // Allowed to show login dialog, but "loggedIn" have to be true too. This exists because prevent the login dialog show 0.1s in first before the socket server auth-ed.
             loggedIn: false,
@@ -118,6 +119,12 @@ export default {
             }
 
             socket = io(url);
+
+            // <-- دریافت نقش از سرور به صورت Real-time
+            socket.on("userRole", (role) => {
+                this.userRole = role;
+                localStorage.userRole = role;
+            });
 
             socket.on("info", (info) => {
                 this.info = info;
@@ -428,6 +435,12 @@ export default {
                         this.loggedIn = true;
                         this.username = this.getJWTPayload()?.username;
 
+                        // <-- ذخیره نقش دریافت شده از سرور
+                        if (res.role) {
+                            this.userRole = res.role;
+                            localStorage.userRole = res.role;
+                        }
+
                         // Trigger Chrome Save Password
                         history.pushState({}, "");
                     }
@@ -451,6 +464,12 @@ export default {
                 } else {
                     this.loggedIn = true;
                     this.username = this.getJWTPayload()?.username;
+
+                    // <-- ذخیره نقش در لاگین با توکن
+                    if (res.role) {
+                        this.userRole = res.role;
+                        localStorage.userRole = res.role;
+                    }
                 }
             });
         },
@@ -465,6 +484,8 @@ export default {
             this.socket.token = null;
             this.loggedIn = false;
             this.username = null;
+            this.userRole = null;
+            localStorage.removeItem("userRole"); // <-- پاکسازی نقش
             this.clearData();
         },
 

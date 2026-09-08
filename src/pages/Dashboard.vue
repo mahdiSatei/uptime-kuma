@@ -2,7 +2,8 @@
     <div class="container-fluid">
         <div class="row">
             <div v-if="!$root.isMobile" class="col-12 col-md-5 col-xl-4 ps-0">
-                <div>
+                <!-- دکمه افزودن مانیتور: فقط برای Admin و Editor نمایش داده می‌شود -->
+                <div v-if="$root.userRole !== 'viewer'">
                     <router-link to="/add" class="btn btn-primary mb-3">
                         <font-awesome-icon icon="plus" />
                         {{ $t("Add New Monitor") }}
